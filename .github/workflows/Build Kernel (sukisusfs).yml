@@ -33,15 +33,143 @@ jobs:
           # Generate base defconfig from source tree
 
 
-      - name: SukiSU Integration
+      - name: SukiSU integration (manual hook) and optional susfs prep
         run: |
+          set -euxo pipefail
           cd kernel-source
-          # Replace KernelSU-Next setup with SukiSU (nongki mode)
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
-          cd ..
 
-      - name: Build kernel
+          # 1) Prepare KernelSU/SukiSU in tree (do NOT select kprobe flow)
+          #    We use the setup script only to stage KernelSU sources/Kconfig/Makefiles.
+          #    Hooking is manual; we won't rely on kprobes.
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
+            | bash -s susfs-main
+
+          # 2) Optional: prepare susfs (experimental)
+          #    If you have a known-good susfs patchset for your base, apply it here (recommended).
+          #    Otherwise, keep this block but skip applying to avoid build surprises.
+          #    Example (replace with your exact patch series/branch):
+          # git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu susfs4ksu
+          # git -C susfs4ksu log -1 --oneline || true
+          # git am --3way --whitespace=fix susfs4ksu/patches/4.19/*.patch || (git am --abort; echo "susfs patch failed"; exit 1)
+
+          # 3) Manually wire KernelSU hooks into core paths.
+          #    We inject guarded calls under #ifdef CONFIG_KSU to keep diffs minimal and portable.
+
+          inject_block() {
+            local file="$1"; local anchor_regex="$2"; shift 2
+            local tmp="$(mktemp)"
+            if ! grep -Eq "$anchor_regex" "$file"; then
+              echo "[FATAL] Anchor not found: $anchor_regex in $file"
+              exit 1
+            fi
+            awk -v r="$anchor_regex" -v block="$*" '
+              BEGIN{printed=0}
+              {
+                print $0
+                if ($0 ~ r && !printed) {
+                  print block
+                  printed=1
+                }
+              }
+              END{ if (printed==0) { exit 2 } }
+            ' "$file" > "$tmp"
+            mv "$tmp" "$file"
+          }
+
+          # 3a) fs/exec.c: do_execveat_common hook
+          if grep -q "do_execveat_common" fs/exec.c; then
+            inject_block fs/exec.c "do_execveat_common\\(" \
+"#ifdef CONFIG_KSU
+extern bool ksu_execveat_hook __read_mostly;
+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
+extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
+#endif"
+            inject_block fs/exec.c "return __do_execve_file\\(" \
+"#ifdef CONFIG_KSU
+  if (unlikely(ksu_execveat_hook))
+    ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+  else
+    ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
+#endif"
+          else
+            echo "[FATAL] fs/exec.c missing do_execveat_common"
+            exit 1
+          fi
+
+          # 3b) fs/open.c: faccessat path
+          if grep -q "long do_faccessat\\|SYSCALL_DEFINE3(faccessat" fs/open.c; then
+            inject_block fs/open.c "long do_faccessat\\(|SYSCALL_DEFINE3\\(faccessat" \
+"#ifdef CONFIG_KSU
+extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);
+#endif"
+            inject_block fs/open.c "lookup_flags = .*" \
+"#ifdef CONFIG_KSU
+  ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
+#endif"
+          else
+            echo "[FATAL] fs/open.c missing faccessat path"
+            exit 1
+          fi
+
+          # 3c) fs/read_write.c: vfs_read
+          if grep -q "ssize_t vfs_read" fs/read_write.c; then
+            inject_block fs/read_write.c "ssize_t vfs_read\\(" \
+"#ifdef CONFIG_KSU
+extern bool ksu_vfs_read_hook __read_mostly;
+extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);
+#endif"
+            inject_block fs/read_write.c "ssize_t vfs_read\\([^)]*\\)\\s*\\{" \
+"#ifdef CONFIG_KSU
+  if (unlikely(ksu_vfs_read_hook))
+    ksu_handle_vfs_read(&file, &buf, &count, &pos);
+#endif"
+          else
+            echo "[FATAL] fs/read_write.c missing vfs_read"
+            exit 1
+          fi
+
+          # 3d) fs/stat.c: vfs_statx or fallback to vfs_fstatat
+          if grep -q "int vfs_statx\\(" fs/stat.c; then
+            inject_block fs/stat.c "int vfs_statx\\(" \
+"#ifdef CONFIG_KSU
+extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
+#endif"
+            inject_block fs/stat.c "int vfs_statx\\([^)]*\\)\\s*\\{" \
+"#ifdef CONFIG_KSU
+  ksu_handle_stat(&dfd, &filename, &flags);
+#endif"
+          elif grep -q "int vfs_fstatat\\(" fs/stat.c; then
+            inject_block fs/stat.c "int vfs_fstatat\\(" \
+"#ifdef CONFIG_KSU
+extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
+#endif"
+            inject_block fs/stat.c "int vfs_fstatat\\([^)]*\\)\\s*\\{" \
+"#ifdef CONFIG_KSU
+  ksu_handle_stat(&dfd, &filename, &flag);
+#endif"
+          else
+            echo "[FATAL] fs/stat.c missing vfs_statx/vfs_fstatat"
+            exit 1
+          fi
+
+          # 3e) Optional Safe Mode (recommended). If you enable this, also keep KPROBES disabled on manual hook.
+          # if grep -q "static void input_handle_event" drivers/input/input.c; then
+          #   inject_block drivers/input/input.c "static void input_handle_event\\(" \
+          # "#ifdef CONFIG_KSU
+          # extern bool ksu_input_hook __read_mostly;
+          # extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
+          # #endif"
+          #   inject_block drivers/input/input.c "int disposition = input_get_disposition\\(" \
+          # "#ifdef CONFIG_KSU
+          #   if (unlikely(ksu_input_hook))
+          #     ksu_handle_input_handle_event(&type, &code, &value);
+          # #endif"
+          # fi
+
+          cd ..
+      - name: Build kernel (manual hook path)
         run: |
+          set -euxo pipefail
           export KBUILD_BUILD_USER="hiahia"
           export PATH=$GITHUB_WORKSPACE/clang/bin:${PATH}
           args="                  ARCH=arm64 \
@@ -53,11 +181,24 @@ jobs:
 
           cd kernel-source
 
-          # Generate base defconfig from source tree
+          # Generate base defconfig AFTER integration
           make ARCH=arm64 ${KERNEL_CONFIG}
 
+          # KernelSU manual hook configs
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --enable CONFIG_KSU \
+            --enable CONFIG_KSU_MANUAL_HOOK
 
-          # Inject zstd-zram support
+          # Disable kprobes to avoid accidental safe-mode triggers on manual hook
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --disable CONFIG_KPROBES \
+            --disable CONFIG_KPROBE_EVENTS || true
+
+          # Tracepoint hook (alternative to manual). Leave disabled unless you switch methods.
+          # ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+          #   --enable CONFIG_KSU_TRACEPOINT_HOOK
+
+          # zram + zstd
           ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
             --enable CONFIG_ZRAM \
             --enable CONFIG_ZRAM_WRITEBACK \
@@ -71,29 +212,38 @@ jobs:
           ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
             --enable CONFIG_ZRAM_MEMORY_TRACKING
 
-          # Inject KPM support
+          # KPM + kallsyms
           ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
             --enable CONFIG_KPM \
             --enable CONFIG_KALLSYMS \
             --enable CONFIG_KALLSYMS_ALL
 
-          # Change default IO scheduler from CFQ to Kyber
+          # IO scheduler Kyber default, CFQ fallback
           ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
             --disable CONFIG_DEFAULT_CFQ \
             --set-str CONFIG_DEFAULT_IOSCHED "kyber" \
             --enable CONFIG_MQ_IOSCHED_KYBER
-
-          # Keep CFQ built-in for fallback but not default
           ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
             --enable CONFIG_IOSCHED_CFQ \
             --enable CONFIG_CFQ_GROUP_IOSCHED
 
-          # Optional: confirm relevant settings
-          grep -E 'CONFIG_ZRAM|ZSTD|CONFIG_KPM|CONFIG_KALLSYMS' arch/arm64/configs/${KERNEL_CONFIG} || true
+          # Optional: namespace umount backport needed for "Umount modules" feature on pre-5.9
+          # (skip if you don't use that feature; otherwise backport path_umount and keep this note)
+
+          # Confirm toggles present in defconfig
+          grep -E 'CONFIG_KSU|CONFIG_KPM|CONFIG_KALLSYMS|CONFIG_KPROBES' arch/arm64/configs/${KERNEL_CONFIG} || true
+
+          # Re-generate .config from the modified defconfig (no mrproper wipe)
+          make ${args} ${KERNEL_CONFIG}
+
+          # Quick sanity: ensure our hook sites compiled paths exist
+          for sym in ksu_handle_execveat ksu_handle_execveat_sucompat ksu_handle_faccessat ksu_handle_vfs_read ksu_handle_stat; do
+            grep -R "$sym" . || { echo "[FATAL] Missing symbol: $sym"; exit 1; }
+          done
 
           clang -v
           make mrproper
-          make ${args} ${{ env.KERNEL_CONFIG }}
+
           make -j$(nproc --all) ${args}
 
       - name: Package kernel
