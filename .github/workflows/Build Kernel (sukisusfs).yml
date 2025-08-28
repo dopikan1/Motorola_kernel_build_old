@@ -33,6 +33,7 @@ jobs:
       - name: Pull kernel source
         run: |
           git clone --depth=1 ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} kernel-source
+          chmod +x scripts/inject_kernel_hooks.sh
 
       - name: Integrate SukiSU (manual hook) + optional susfs
         run: |
@@ -43,77 +44,10 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
             | bash -s susfs-nongki
 
-          # Inject kernel hooks
-          inject_block() {
-            local file="$1"; local anchor="$2"; shift 2
-            local tmp="$(mktemp)"
-            grep -Eq "$anchor" "$file" || { echo "[FATAL] Anchor not found: $anchor in $file"; exit 1; }
-            awk -v r="$anchor" -v block="$*" '
-              BEGIN{p=0}
-              {print; if ($0 ~ r && !p){print block; p=1}}
-              END{ if(p==0) exit 2 }
-            ' "$file" > "$tmp" && mv "$tmp" "$file"
-          }
+      - name: Inject kernel hooks
+        run: scripts/inject_kernel_hooks.sh
 
-          # fs/exec.c
-          inject_block fs/exec.c "do_execveat_common\\(" \
-"#ifdef CONFIG_KSU
-extern bool ksu_execveat_hook __read_mostly;
-extern int ksu_handle_execveat(int*, struct filename**, void*, void*, int*);
-extern int ksu_handle_execveat_sucompat(int*, struct filename**, void*, void*, int*);
-#endif"
-          inject_block fs/exec.c "return __do_execve_file\\(" \
-"#ifdef CONFIG_KSU
-  if (unlikely(ksu_execveat_hook))
-    ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-  else
-    ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
-#endif"
 
-          # fs/open.c
-          inject_block fs/open.c "long do_faccessat\\(|SYSCALL_DEFINE3\\(faccessat" \
-"#ifdef CONFIG_KSU
-extern int ksu_handle_faccessat(int*, const char __user **, int*, int*);
-#endif"
-          inject_block fs/open.c "lookup_flags = .*" \
-"#ifdef CONFIG_KSU
-  ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
-#endif"
-
-          # fs/read_write.c
-          inject_block fs/read_write.c "ssize_t vfs_read\\(" \
-"#ifdef CONFIG_KSU
-extern bool ksu_vfs_read_hook __read_mostly;
-extern int ksu_handle_vfs_read(struct file**, char __user **, size_t*, loff_t**);
-#endif"
-          inject_block fs/read_write.c "ssize_t vfs_read\\([^)]*\\)\\s*\\{" \
-"#ifdef CONFIG_KSU
-  if (unlikely(ksu_vfs_read_hook))
-    ksu_handle_vfs_read(&file, &buf, &count, &pos);
-#endif"
-
-          # fs/stat.c
-          if grep -q "int vfs_statx" fs/stat.c; then
-            inject_block fs/stat.c "int vfs_statx\\(" \
-"#ifdef CONFIG_KSU
-extern int ksu_handle_stat(int*, const char __user **, int*);
-#endif"
-            inject_block fs/stat.c "int vfs_statx\\([^)]*\\)\\s*\\{" \
-"#ifdef CONFIG_KSU
-  ksu_handle_stat(&dfd, &filename, &flags);
-#endif"
-          else
-            inject_block fs/stat.c "int vfs_fstatat\\(" \
-"#ifdef CONFIG_KSU
-extern int ksu_handle_stat(int*, const char __user **, int*);
-#endif"
-            inject_block fs/stat.c "int vfs_fstatat\\([^)]*\\)\\s*\\{" \
-"#ifdef CONFIG_KSU
-  ksu_handle_stat(&dfd, &filename, &flag);
-#endif"
-          fi
-
-          cd ..
 
       - name: Build kernel
         run: |
