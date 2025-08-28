@@ -1,4 +1,4 @@
-name: Build Kernel (sukisusfs)
+name: Build Kernel (suki)
 
 on:
   workflow_dispatch:
@@ -36,18 +36,26 @@ jobs:
       - name: SukiSU Integration
         run: |
           cd kernel-source
+          # Replace KernelSU-Next setup with SukiSU (nongki mode)
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
+          cd ..
+
+      - name: Build kernel
+        run: |
+          export KBUILD_BUILD_USER="hiahia"
+          export PATH=$GITHUB_WORKSPACE/clang/bin:${PATH}
+          args="                  ARCH=arm64 \
+                                  O=../out \
+                                  ${{ env.BUILD_ARGS }} \
+                                  CLANG_TRIPLE=aarch64-linux-gnu- \
+                                  CROSS_COMPILE=$GITHUB_WORKSPACE/aarch64-linux-android-4.9/bin/aarch64-linux-android- \
+                                  CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/arm-linux-androideabi-4.9/bin/arm-linux-androideabi- "
+
+          cd kernel-source
+
           # Generate base defconfig from source tree
           make ARCH=arm64 ${KERNEL_CONFIG}
 
-          # Disable KernelSU kprobe hook in sources (non-GKI)
-          grep -RIl "^#ifdef[[:space:]]\+CONFIG_KPROBES" "$KSU_DIR" | xargs -r sed -i \
-            's/^#ifdef[[:space:]]\+CONFIG_KPROBES/#if defined(CONFIG_KPROBES) \&\& 0/'
-
-
-          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU || true
-          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU_SUSFS || true
-          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT || true
-          ./scripts/config --file "$DEFCONFIG" --disable CONFIG_KSU_KPROBES_HOOK || true
 
           # Inject zstd-zram support
           ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
@@ -82,61 +90,6 @@ jobs:
 
           # Optional: confirm relevant settings
           grep -E 'CONFIG_ZRAM|ZSTD|CONFIG_KPM|CONFIG_KALLSYMS' arch/arm64/configs/${KERNEL_CONFIG} || true
-          # Replace KernelSU-Next setup with SukiSU (nongki mode)
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
-          cd ..
-
-
-      - name: Apply SUSFS patches (non-GKI, 4.19)
-        env:
-          SUSFS_BRANCH: kernel-4.19
-        working-directory: kernel-source
-        run: |
-          set -euo pipefail
-
-          # Locate KernelSU
-          if [ -d KernelSU ]; then KSU_DIR="KernelSU";
-          elif [ -d external/KernelSU ]; then KSU_DIR="external/KernelSU";
-          else echo "KernelSU not found"; exit 1; fi
-          echo "[SUSFS] Using KernelSU at: $KSU_DIR"
-
-          # Fetch SUSFS payload
-          rm -rf ../susfs4ksu
-          git clone --depth=1 --branch "${SUSFS_BRANCH}" https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
-
-          # Apply patches
-          cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch "$KSU_DIR"/
-          ( cd "$KSU_DIR" && patch -p1 --forward < 10_enable_susfs_for_ksu.patch || true )
-
-          if [ -f ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch ]; then
-            patch -p1 --forward < ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch
-          else
-            patch -p1 --forward < ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel.patch
-          fi
-
-          # Copy fs/include additions
-          cp -r ../susfs4ksu/kernel_patches/fs/* ./fs/ || true
-          cp -r ../susfs4ksu/kernel_patches/include/linux/* ./include/linux/ || true
-
-          # Required revert for SUSFS
-          curl -sSL -o /tmp/ksu-revert-898e9d4.patch https://github.com/tiann/KernelSU/commit/898e9d4f8ca9b2f46b0c6b36b80a872b5b88d899.patch
-          ( cd "$KSU_DIR" && patch -p1 --forward < /tmp/ksu-revert-898e9d4.patch || true )
-
-
-
-
-      - name: Build kernel
-        run: |
-          export KBUILD_BUILD_USER="hiahia"
-          export PATH=$GITHUB_WORKSPACE/clang/bin:${PATH}
-          args="                  ARCH=arm64 \
-                                  O=../out \
-                                  ${{ env.BUILD_ARGS }} \
-                                  CLANG_TRIPLE=aarch64-linux-gnu- \
-                                  CROSS_COMPILE=$GITHUB_WORKSPACE/aarch64-linux-android-4.9/bin/aarch64-linux-android- \
-                                  CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/arm-linux-androideabi-4.9/bin/arm-linux-androideabi- "
-
-          cd kernel-source
 
           clang -v
           make mrproper
