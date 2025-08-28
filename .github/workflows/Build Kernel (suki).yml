@@ -31,55 +31,12 @@ jobs:
         run: |
           git clone --depth=1 ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} kernel-source
 
-      - name: Integrate SUSFS into kernel (non-GKI, 4.19)
-        env:
-          KERNEL_ROOT: kernel-source
-          SUSFS_BRANCH: kernel-4.19
-        run: |
-          set -euo pipefail
-          cd "$KERNEL_ROOT"
-
-          # Detect KernelSU location after SukiSU has laid it out
-          if [ -d KernelSU ]; then KSU_DIR="KernelSU";
-          elif [ -d external/KernelSU ]; then KSU_DIR="external/KernelSU";
-          else echo "KernelSU not found"; exit 1; fi
-
-          rm -rf ../susfs4ksu
-          git clone --depth=1 --branch "${SUSFS_BRANCH}" https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
-
-          cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch "$KSU_DIR"/
-          if [ -f ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch ]; then
-            cp ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch ./50_add_susfs_in_kernel.patch
-          else
-            cp ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel.patch ./50_add_susfs_in_kernel.patch
-          fi
-          cp -r ../susfs4ksu/kernel_patches/fs/* ./fs/ || true
-          cp -r ../susfs4ksu/kernel_patches/include/linux/* ./include/linux/ || true
-
-          ( cd "$KSU_DIR" && patch -p1 --forward < 10_enable_susfs_for_ksu.patch || true )
-          patch -p1 --forward < ./50_add_susfs_in_kernel.patch
-
-          # Required revert for SUSFS
-          curl -sSL -o /tmp/ksu-revert-898e9d4.patch https://github.com/tiann/KernelSU/commit/898e9d4f8ca9b2f46b0c6b36b80a872b5b88d899.patch
-          ( cd "$KSU_DIR" && patch -p1 --forward < /tmp/ksu-revert-898e9d4.patch || true )
-
-          # Kill KSU kprobe hook in sources (non-GKI)
-          grep -RIl "^#ifdef[[:space:]]\+CONFIG_KPROBES" "$KSU_DIR" | xargs -r sed -i \
-            's/^#ifdef[[:space:]]\+CONFIG_KPROBES/#if defined(CONFIG_KPROBES) \&\& 0/'
-
-          # Force SUSFS configs in the defconfig you build from
-          DEFCONFIG="arch/arm64/configs/${KERNEL_CONFIG}"
-          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU || true
-          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU_SUSFS || true
-          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT || true
-          ./scripts/config --file "$DEFCONFIG" --disable CONFIG_KSU_KPROBES_HOOK || true
-
 
       - name: SukiSU Integration
         run: |
           cd kernel-source
           # Replace KernelSU-Next setup with SukiSU (susfs mode)
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
           make mrproper
           cd ..
 
@@ -132,7 +89,7 @@ jobs:
             --enable CONFIG_CFQ_GROUP_IOSCHED
 
           # Optional: confirm relevant settings
-          grep -E 'CONFIG_KRETPROBES|CONFIG_ZRAM|ZSTD|CONFIG_KPM|CONFIG_KALLSYMS' arch/arm64/configs/${KERNEL_CONFIG} || true
+          grep -E 'CONFIG_ZRAM|ZSTD|CONFIG_KPM|CONFIG_KALLSYMS' arch/arm64/configs/${KERNEL_CONFIG} || true
 
           clang -v
           make ${args} ${{ env.KERNEL_CONFIG }}
