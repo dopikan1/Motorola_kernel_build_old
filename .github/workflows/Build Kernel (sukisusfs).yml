@@ -36,6 +36,52 @@ jobs:
       - name: SukiSU Integration
         run: |
           cd kernel-source
+          # Generate base defconfig from source tree
+          make ARCH=arm64 ${KERNEL_CONFIG}
+
+          # Disable KernelSU kprobe hook in sources (non-GKI)
+          grep -RIl "^#ifdef[[:space:]]\+CONFIG_KPROBES" "$KSU_DIR" | xargs -r sed -i \
+            's/^#ifdef[[:space:]]\+CONFIG_KPROBES/#if defined(CONFIG_KPROBES) \&\& 0/'
+
+
+          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU || true
+          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU_SUSFS || true
+          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT || true
+          ./scripts/config --file "$DEFCONFIG" --disable CONFIG_KSU_KPROBES_HOOK || true
+
+          # Inject zstd-zram support
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --enable CONFIG_ZRAM \
+            --enable CONFIG_ZRAM_WRITEBACK \
+            --enable CONFIG_CRYPTO_ZSTD \
+            --enable CONFIG_ZSTD_COMPRESS \
+            --enable CONFIG_ZSTD_DECOMPRESS
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --set-str CONFIG_ZRAM_DEFAULT_COMP "zstd" || true
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --enable CONFIG_ZRAM_DEF_COMP_ZSTD || true
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --enable CONFIG_ZRAM_MEMORY_TRACKING
+
+          # Inject KPM support
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --enable CONFIG_KPM \
+            --enable CONFIG_KALLSYMS \
+            --enable CONFIG_KALLSYMS_ALL
+
+          # Change default IO scheduler from CFQ to Kyber
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --disable CONFIG_DEFAULT_CFQ \
+            --set-str CONFIG_DEFAULT_IOSCHED "kyber" \
+            --enable CONFIG_MQ_IOSCHED_KYBER
+
+          # Keep CFQ built-in for fallback but not default
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --enable CONFIG_IOSCHED_CFQ \
+            --enable CONFIG_CFQ_GROUP_IOSCHED
+
+          # Optional: confirm relevant settings
+          grep -E 'CONFIG_ZRAM|ZSTD|CONFIG_KPM|CONFIG_KALLSYMS' arch/arm64/configs/${KERNEL_CONFIG} || true
           # Replace KernelSU-Next setup with SukiSU (nongki mode)
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
           cd ..
@@ -91,53 +137,6 @@ jobs:
                                   CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/arm-linux-androideabi-4.9/bin/arm-linux-androideabi- "
 
           cd kernel-source
-
-          # Generate base defconfig from source tree
-          make ARCH=arm64 ${KERNEL_CONFIG}
-
-          # Disable KernelSU kprobe hook in sources (non-GKI)
-          grep -RIl "^#ifdef[[:space:]]\+CONFIG_KPROBES" "$KSU_DIR" | xargs -r sed -i \
-            's/^#ifdef[[:space:]]\+CONFIG_KPROBES/#if defined(CONFIG_KPROBES) \&\& 0/'
-
-
-          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU || true
-          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU_SUSFS || true
-          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT || true
-          ./scripts/config --file "$DEFCONFIG" --disable CONFIG_KSU_KPROBES_HOOK || true
-
-          # Inject zstd-zram support
-          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
-            --enable CONFIG_ZRAM \
-            --enable CONFIG_ZRAM_WRITEBACK \
-            --enable CONFIG_CRYPTO_ZSTD \
-            --enable CONFIG_ZSTD_COMPRESS \
-            --enable CONFIG_ZSTD_DECOMPRESS
-          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
-            --set-str CONFIG_ZRAM_DEFAULT_COMP "zstd" || true
-          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
-            --enable CONFIG_ZRAM_DEF_COMP_ZSTD || true
-          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
-            --enable CONFIG_ZRAM_MEMORY_TRACKING
-
-          # Inject KPM support
-          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
-            --enable CONFIG_KPM \
-            --enable CONFIG_KALLSYMS \
-            --enable CONFIG_KALLSYMS_ALL
-
-          # Change default IO scheduler from CFQ to Kyber
-          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
-            --disable CONFIG_DEFAULT_CFQ \
-            --set-str CONFIG_DEFAULT_IOSCHED "kyber" \
-            --enable CONFIG_MQ_IOSCHED_KYBER
-
-          # Keep CFQ built-in for fallback but not default
-          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
-            --enable CONFIG_IOSCHED_CFQ \
-            --enable CONFIG_CFQ_GROUP_IOSCHED
-
-          # Optional: confirm relevant settings
-          grep -E 'CONFIG_ZRAM|ZSTD|CONFIG_KPM|CONFIG_KALLSYMS' arch/arm64/configs/${KERNEL_CONFIG} || true
 
           clang -v
           make mrproper
