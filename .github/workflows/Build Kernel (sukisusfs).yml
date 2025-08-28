@@ -33,7 +33,7 @@ jobs:
       - name: Pull kernel source
         run: |
           git clone --depth=1 ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} kernel-source
-          chmod +x scripts/inject_kernel_hooks.sh
+          chmod +x inject_kernel_hooks.sh
 
       - name: Integrate SukiSU (manual hook) + optional susfs
         run: |
@@ -45,7 +45,7 @@ jobs:
             | bash -s susfs-nongki
 
       - name: Inject kernel hooks
-        run: scripts/inject_kernel_hooks.sh
+        run: inject_kernel_hooks.sh
 
 
 
