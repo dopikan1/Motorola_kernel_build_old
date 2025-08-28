@@ -54,10 +54,6 @@ jobs:
           # Generate base defconfig from source tree
           make ARCH=arm64 ${KERNEL_CONFIG}
 
-          # Inject kprobes
-          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
-            --enable CONFIG_KPROBES \
-            --enable CONFIG_KRETPROBES
 
           # Inject zstd-zram support
           ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
@@ -91,7 +87,7 @@ jobs:
             --enable CONFIG_CFQ_GROUP_IOSCHED
 
           # Optional: confirm relevant settings
-          grep -E 'CONFIG_KPROBES|CONFIG_KRETPROBES|CONFIG_ZRAM|ZSTD|CONFIG_KPM|CONFIG_KALLSYMS' arch/arm64/configs/${KERNEL_CONFIG} || true
+          grep -E 'CONFIG_KRETPROBES|CONFIG_ZRAM|ZSTD|CONFIG_KPM|CONFIG_KALLSYMS' arch/arm64/configs/${KERNEL_CONFIG} || true
 
           clang -v
           make ${args} ${{ env.KERNEL_CONFIG }}
