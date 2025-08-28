@@ -38,7 +38,6 @@ jobs:
           cd kernel-source
           # Replace KernelSU-Next setup with SukiSU (nongki mode)
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
-          make mrproper
           cd ..
 
       - name: Build kernel
@@ -93,6 +92,7 @@ jobs:
           grep -E 'CONFIG_ZRAM|ZSTD|CONFIG_KPM|CONFIG_KALLSYMS' arch/arm64/configs/${KERNEL_CONFIG} || true
 
           clang -v
+          make mrproper
           make ${args} ${{ env.KERNEL_CONFIG }}
           make -j$(nproc --all) ${args}
 
