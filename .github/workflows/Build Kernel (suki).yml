@@ -30,12 +30,13 @@ jobs:
       - name: Pull kernel source
         run: |
           git clone --depth=1 ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} kernel-source
+          # Generate base defconfig from source tree
 
 
       - name: SukiSU Integration
         run: |
           cd kernel-source
-          # Replace KernelSU-Next setup with SukiSU (susfs mode)
+          # Replace KernelSU-Next setup with SukiSU (nongki mode)
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
           make mrproper
           cd ..
