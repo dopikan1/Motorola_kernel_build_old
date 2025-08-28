@@ -42,7 +42,7 @@ jobs:
 
           # Base integration (manual hook, no kprobe)
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
-            | bash -s susfs-nongki
+            | bash -s susfs-main
 
       - name: Inject kernel hooks
         run: inject_kernel_hooks.sh
