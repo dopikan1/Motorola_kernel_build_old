@@ -1,101 +1,100 @@
 name: Build Kernel (suki)
 
-
 on:
   workflow_dispatch:
-
 
 jobs:
   build-kernel:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+
       - name: Setup environment
         run: |
-          echo "ANYKERNEL_SOURCE=$(cat config.env | grep -w "ANYKERNEL_SOURCE" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
-          echo "ANYKERNEL_SOURCE_BRANCH=$(cat config.env | grep -w "ANYKERNEL_SOURCE_BRANCH" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
-          echo "KERNEL_SOURCE=$(cat config.env | grep -w "KERNEL_SOURCE" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
-          echo "KERNEL_SOURCE_BRANCH=$(cat config.env | grep -w "KERNEL_SOURCE_BRANCH" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
-          echo "KERNEL_CONFIG=$(cat config.env | grep -w "KERNEL_CONFIG" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
-          echo "BUILD_ARGS=$(cat config.env | grep -w "BUILD_ARGS" | head -n 1 | cut -d ":" -f 2)" >> $GITHUB_ENV
+          echo "ANYKERNEL_SOURCE=$(grep -w "ANYKERNEL_SOURCE" config.env | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
+          echo "ANYKERNEL_SOURCE_BRANCH=$(grep -w "ANYKERNEL_SOURCE_BRANCH" config.env | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
+          echo "KERNEL_SOURCE=$(grep -w "KERNEL_SOURCE" config.env | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
+          echo "KERNEL_SOURCE_BRANCH=$(grep -w "KERNEL_SOURCE_BRANCH" config.env | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
+          echo "KERNEL_CONFIG=$(grep -w "KERNEL_CONFIG" config.env | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
+          echo "BUILD_ARGS=$(grep -w "BUILD_ARGS" config.env | head -n 1 | cut -d ":" -f 2)" >> $GITHUB_ENV
           sudo apt-get update
-          sudo apt install python2 libncurses5
-          sudo apt-get install libselinux-dev
+          sudo apt-get install -y python2 libncurses5 libselinux-dev
+
       - name: Pull toolchain
         run: |
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 aarch64-linux-android-4.9
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 arm-linux-androideabi-4.9
           git clone https://github.com/xiangfeidexiaohuo/Snapdragon-LLVM.git clang
-          
+
       - name: Pull kernel source
         run: |
           git clone --depth=1 ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} kernel-source
-          
-- name: SukiSU Integration
-  run: |
-    cd kernel-source
-    # Replace KernelSU-Next setup with SukiSU (kprobe mode)
-    curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
-    cd ..
 
+      - name: SukiSU Integration
+        run: |
+          cd kernel-source
+          # Replace KernelSU-Next setup with SukiSU (kprobe mode)
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
+          cd ..
 
-- name: Build kernel
-  run: |
-    export KBUILD_BUILD_USER="hiahia"
-    export PATH=$GITHUB_WORKSPACE/clang/bin:${PATH}
-    args="                  ARCH=arm64 \
-                            O=../out \
-                            ${{ env.BUILD_ARGS }} \
-                            CLANG_TRIPLE=aarch64-linux-gnu- \
-                            CROSS_COMPILE=$GITHUB_WORKSPACE/aarch64-linux-android-4.9/bin/aarch64-linux-android- \
-                            CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/arm-linux-androideabi-4.9/bin/arm-linux-androideabi- "
+      - name: Build kernel
+        run: |
+          export KBUILD_BUILD_USER="hiahia"
+          export PATH=$GITHUB_WORKSPACE/clang/bin:${PATH}
+          args="                  ARCH=arm64 \
+                                  O=../out \
+                                  ${{ env.BUILD_ARGS }} \
+                                  CLANG_TRIPLE=aarch64-linux-gnu- \
+                                  CROSS_COMPILE=$GITHUB_WORKSPACE/aarch64-linux-android-4.9/bin/aarch64-linux-android- \
+                                  CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/arm-linux-androideabi-4.9/bin/arm-linux-androideabi- "
 
-    cd kernel-source
+          cd kernel-source
 
-    # Generate base defconfig from source tree
-    make ARCH=arm64 ${KERNEL_CONFIG}
+          # Generate base defconfig from source tree
+          make ARCH=arm64 ${KERNEL_CONFIG}
 
-    # Inject kprobes
-    ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
-      --enable CONFIG_KPROBES \
-      --enable CONFIG_KRETPROBES
+          # Inject kprobes
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --enable CONFIG_KPROBES \
+            --enable CONFIG_KRETPROBES
 
-    # Inject zstd-zram support
-    ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
-      --enable CONFIG_ZRAM \
-      --enable CONFIG_ZRAM_WRITEBACK \
-      --enable CONFIG_CRYPTO_ZSTD \
-      --enable CONFIG_ZSTD_COMPRESS \
-      --enable CONFIG_ZSTD_DECOMPRESS
-    ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
-      --set-str CONFIG_ZRAM_DEFAULT_COMP "zstd" || true
-    ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
-      --enable CONFIG_ZRAM_DEF_COMP_ZSTD || true
+          # Inject zstd-zram support
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --enable CONFIG_ZRAM \
+            --enable CONFIG_ZRAM_WRITEBACK \
+            --enable CONFIG_CRYPTO_ZSTD \
+            --enable CONFIG_ZSTD_COMPRESS \
+            --enable CONFIG_ZSTD_DECOMPRESS
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --set-str CONFIG_ZRAM_DEFAULT_COMP "zstd" || true
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --enable CONFIG_ZRAM_DEF_COMP_ZSTD || true
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --enable CONFIG_ZRAM_MEMORY_TRACKING
 
-    # Inject KPM support
-    ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
-      --enable CONFIG_KPM \
-      --enable CONFIG_KALLSYMS \
-      --enable CONFIG_KALLSYMS_ALL
+          # Inject KPM support
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --enable CONFIG_KPM \
+            --enable CONFIG_KALLSYMS \
+            --enable CONFIG_KALLSYMS_ALL
 
-    # Change default IO scheduler from CFQ to Kyber
-    ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
-      --disable CONFIG_DEFAULT_CFQ \
-      --set-str CONFIG_DEFAULT_IOSCHED "kyber" \
-      --enable CONFIG_MQ_IOSCHED_KYBER
+          # Change default IO scheduler from CFQ to Kyber
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --disable CONFIG_DEFAULT_CFQ \
+            --set-str CONFIG_DEFAULT_IOSCHED "kyber" \
+            --enable CONFIG_MQ_IOSCHED_KYBER
 
-    # Optionally, keep CFQ built-in for fallback but not default
-    ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
-      --enable CONFIG_IOSCHED_CFQ \
-      --enable CONFIG_CFQ_GROUP_IOSCHED
+          # Keep CFQ built-in for fallback but not default
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --enable CONFIG_IOSCHED_CFQ \
+            --enable CONFIG_CFQ_GROUP_IOSCHED
 
-    # Optional: confirm relevant settings
-    grep -E 'CONFIG_KPROBES|CONFIG_KRETPROBES|CONFIG_ZRAM|ZSTD|CONFIG_KPM|CONFIG_KALLSYMS' arch/arm64/configs/${KERNEL_CONFIG} || true
+          # Optional: confirm relevant settings
+          grep -E 'CONFIG_KPROBES|CONFIG_KRETPROBES|CONFIG_ZRAM|ZSTD|CONFIG_KPM|CONFIG_KALLSYMS' arch/arm64/configs/${KERNEL_CONFIG} || true
 
-    clang -v
-    make ${args} ${{ env.KERNEL_CONFIG }}
-    make -j$(nproc --all) ${args}
-
+          clang -v
+          make ${args} ${{ env.KERNEL_CONFIG }}
+          make -j$(nproc --all) ${args}
 
       - name: Package kernel
         run: |
