@@ -1,4 +1,4 @@
-name: Build Kernel (suki)
+name: Build Kernel (sukisusfs)
 
 on:
   workflow_dispatch:
