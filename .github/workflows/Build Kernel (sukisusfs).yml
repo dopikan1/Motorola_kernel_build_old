@@ -1,0 +1,160 @@
+name: Build Kernel (sukisusfs)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup environment
+        run: |
+          echo "ANYKERNEL_SOURCE=$(grep -w 'ANYKERNEL_SOURCE' config.env | head -n 1 | cut -d '=' -f 2)" >> $GITHUB_ENV
+          echo "ANYKERNEL_SOURCE_BRANCH=$(grep -w 'ANYKERNEL_SOURCE_BRANCH' config.env | head -n 1 | cut -d '=' -f 2)" >> $GITHUB_ENV
+          echo "KERNEL_SOURCE=$(grep -w 'KERNEL_SOURCE' config.env | head -n 1 | cut -d '=' -f 2)" >> $GITHUB_ENV
+          echo "KERNEL_SOURCE_BRANCH=$(grep -w 'KERNEL_SOURCE_BRANCH' config.env | head -n 1 | cut -d '=' -f 2)" >> $GITHUB_ENV
+          echo "KERNEL_CONFIG=$(grep -w 'KERNEL_CONFIG' config.env | head -n 1 | cut -d '=' -f 2)" >> $GITHUB_ENV
+          echo "BUILD_ARGS=$(grep -w 'BUILD_ARGS' config.env | head -n 1 | cut -d ':' -f 2)" >> $GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y python2 libncurses5 libselinux-dev
+          sudo update-alternatives --install /usr/bin/python python /usr/bin/python2 1
+          sudo update-alternatives --set python /usr/bin/python2
+
+      - name: Pull toolchain
+        run: |
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 aarch64-linux-android-4.9
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 arm-linux-androideabi-4.9
+          git clone https://github.com/xiangfeidexiaohuo/Snapdragon-LLVM.git clang
+
+      - name: Pull kernel source
+        run: |
+          git clone --depth=1 ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} kernel-source
+
+      - name: Generate base defconfig (out-of-tree)
+        working-directory: kernel-source
+        run: |
+          make ARCH=arm64 O=../out ${{ env.KERNEL_CONFIG }}
+          # Flip defconfig so SUSFS is used (not kprobes)
+          DEFCONFIG="arch/arm64/configs/${KERNEL_CONFIG}"
+          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU || true
+          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU_SUSFS || true
+          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT || true
+          ./scripts/config --file "$DEFCONFIG" --disable CONFIG_KSU_KPROBES_HOOK || true
+
+      - name: SukiSU integration (susfs-main)
+        working-directory: kernel-source
+        run: |
+          set -euo pipefail
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
+
+      - name: Apply SUSFS patches (non-GKI, 4.19)
+        env:
+          SUSFS_BRANCH: kernel-4.19
+        working-directory: kernel-source
+        run: |
+          set -euo pipefail
+
+          # Locate KernelSU
+          if [ -d KernelSU ]; then KSU_DIR="KernelSU";
+          elif [ -d external/KernelSU ]; then KSU_DIR="external/KernelSU";
+          else echo "KernelSU not found"; exit 1; fi
+          echo "[SUSFS] Using KernelSU at: $KSU_DIR"
+
+          # Fetch SUSFS payload
+          rm -rf ../susfs4ksu
+          git clone --depth=1 --branch "${SUSFS_BRANCH}" https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
+
+          # Apply patches
+          cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch "$KSU_DIR"/
+          ( cd "$KSU_DIR" && patch -p1 --forward < 10_enable_susfs_for_ksu.patch || true )
+
+          if [ -f ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch ]; then
+            patch -p1 --forward < ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch
+          else
+            patch -p1 --forward < ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel.patch
+          fi
+
+          # Copy fs/include additions
+          cp -r ../susfs4ksu/kernel_patches/fs/* ./fs/ || true
+          cp -r ../susfs4ksu/kernel_patches/include/linux/* ./include/linux/ || true
+
+          # Required revert for SUSFS
+          curl -sSL -o /tmp/ksu-revert-898e9d4.patch https://github.com/tiann/KernelSU/commit/898e9d4f8ca9b2f46b0c6b36b80a872b5b88d899.patch
+          ( cd "$KSU_DIR" && patch -p1 --forward < /tmp/ksu-revert-898e9d4.patch || true )
+
+          # Disable KernelSU kprobe hook in sources (non-GKI)
+          grep -RIl "^#ifdef[[:space:]]\+CONFIG_KPROBES" "$KSU_DIR" | xargs -r sed -i \
+            's/^#ifdef[[:space:]]\+CONFIG_KPROBES/#if defined(CONFIG_KPROBES) \&\& 0/'
+
+          # Flip defconfig so SUSFS is used (not kprobes)
+          DEFCONFIG="arch/arm64/configs/${KERNEL_CONFIG}"
+          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU || true
+          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU_SUSFS || true
+          ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT || true
+          ./scripts/config --file "$DEFCONFIG" --disable CONFIG_KSU_KPROBES_HOOK || true
+
+          # Clean once before actual build
+          make O=../out mrproper
+
+      - name: Build kernel
+        run: |
+          set -euo pipefail
+          export KBUILD_BUILD_USER="hiahia"
+          export PATH=$GITHUB_WORKSPACE/clang/bin:${PATH}
+          args="ARCH=arm64 O=../out ${{ env.BUILD_ARGS }} CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$GITHUB_WORKSPACE/aarch64-linux-android-4.9/bin/aarch64-linux-android- CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/arm-linux-androideabi-4.9/bin/arm-linux-androideabi-"
+
+          cd kernel-source
+
+          # Materialize defconfig into out/.config (post-patches)
+          make ${args} ${{ env.KERNEL_CONFIG }}
+
+          # Enforce SUSFS mode in the final .config (belt & suspenders)
+          ./scripts/config --file ../out/.config --disable CONFIG_KSU_KPROBES_HOOK || true
+          ./scripts/config --file ../out/.config --enable CONFIG_KSU_SUSFS || true
+          ./scripts/config --file ../out/.config --enable CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT || true
+          yes "" | make ${args} olddefconfig
+
+          # zram + zstd
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} --enable CONFIG_ZRAM
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} --enable CONFIG_ZRAM_WRITEBACK
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} --enable CONFIG_CRYPTO_ZSTD
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} --enable CONFIG_ZSTD_COMPRESS
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} --enable CONFIG_ZSTD_DECOMPRESS
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} --set-str CONFIG_ZRAM_DEFAULT_COMP "zstd" || true
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} --enable CONFIG_ZRAM_DEF_COMP_ZSTD || true
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} --enable CONFIG_ZRAM_MEMORY_TRACKING
+
+          # KPM + kallsyms
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} --enable CONFIG_KPM
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} --enable CONFIG_KALLSYMS
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} --enable CONFIG_KALLSYMS_ALL
+
+          # Kyber as default
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} --disable CONFIG_DEFAULT_CFQ
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} --set-str CONFIG_DEFAULT_IOSCHED "kyber"
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} --enable CONFIG_MQ_IOSCHED_KYBER
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} --enable CONFIG_IOSCHED_CFQ
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} --enable CONFIG_CFQ_GROUP_IOSCHED
+
+          # Show final toggles (optional)
+          egrep -n 'CONFIG_KSU|CONFIG_KPROBES|CONFIG_KPM|CONFIG_KALLSYMS|CONFIG_ZRAM|ZSTD|DEFAULT_IOSCHED' ../out/.config || true
+
+          clang -v
+          make -j"$(nproc --all)" ${args}
+
+      - name: Package kernel
+        run: |
+          git clone --depth=1 ${{ env.ANYKERNEL_SOURCE }} -b ${{ env.ANYKERNEL_SOURCE_BRANCH }} AnyKernel3
+          rm -rf AnyKernel3/.git AnyKernel3/.github AnyKernel3/LICENSE AnyKernel3/README.md
+          for f in Image.gz-dtb Image-dtb Image.gz Image; do
+            if [ -f out/arch/arm64/boot/$f ]; then cp out/arch/arm64/boot/$f AnyKernel3/$f; break; fi
+          done
+          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/dtbo.img || true
+
+      - name: Upload kernel to artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnyKernel3_kernel
+          path: AnyKernel3/*
