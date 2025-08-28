@@ -74,9 +74,6 @@ jobs:
           ./scripts/config --file "$DEFCONFIG" --enable CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT || true
           ./scripts/config --file "$DEFCONFIG" --disable CONFIG_KSU_KPROBES_HOOK || true
 
-          # Single clean before build
-          make mrproper
-
 
       - name: SukiSU Integration
         run: |
