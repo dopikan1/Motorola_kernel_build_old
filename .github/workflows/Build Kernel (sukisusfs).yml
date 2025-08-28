@@ -33,7 +33,7 @@ jobs:
       - name: Pull kernel source
         run: |
           git clone --depth=1 ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} kernel-source
-          chmod +x inject_kernel_hooks.sh
+          chmod +x /home/runner/work/Motorola_kernel_build/Motorola_kernel_build/inject_kernel_hooks.sh
 
       - name: Integrate SukiSU (manual hook) + optional susfs
         run: |
@@ -45,7 +45,7 @@ jobs:
             | bash -s susfs-main
 
       - name: Inject kernel hooks
-        run: inject_kernel_hooks.sh
+        run: /home/runner/work/Motorola_kernel_build/Motorola_kernel_build/inject_kernel_hooks.sh
 
 
 
