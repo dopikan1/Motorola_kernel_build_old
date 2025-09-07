@@ -78,20 +78,6 @@ jobs:
           make ${args} "${KERNEL_CONFIG}"
           make -j"$(nproc --all)" ${args}
 
-      - name: Build crypto_zstdn.ko
-        run: |
-          export PATH="$GITHUB_WORKSPACE/clang/bin:${PATH}"
-          args="ARCH=arm64 \
-                O=../out \
-                ${{ env.BUILD_ARGS }} \
-                CLANG_TRIPLE=aarch64-linux-gnu- \
-                CROSS_COMPILE=$GITHUB_WORKSPACE/aarch64-linux-android-4.9/bin/aarch64-linux-android- \
-                CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/arm-linux-androideabi-4.9/bin/arm-linux-androideabi-"
-
-          cd kernel-source
-          # Build only the zstd crypto module
-          make -j"$(nproc --all)" ${args} M=crypto/zstd modules
-
       - name: Package kernel
         run: |
           git clone --depth=1 "${{ env.ANYKERNEL_SOURCE }}" -b "${{ env.ANYKERNEL_SOURCE_BRANCH }}" AnyKernel3
@@ -111,7 +97,6 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: kernel_and_crypto_zstdn
+          name: kernel
           path: |
             AnyKernel3/*
-            kernel-source/crypto/zstd/crypto_zstdn.ko
