@@ -8,95 +8,98 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup environment
         run: |
-          echo "ANYKERNEL_SOURCE=$(grep -w ANYKERNEL_SOURCE config.env | head -n1 | cut -d '=' -f2-)" >> $GITHUB_ENV
-          echo "ANYKERNEL_SOURCE_BRANCH=$(grep -w ANYKERNEL_SOURCE_BRANCH config.env | head -n1 | cut -d '=' -f2-)" >> $GITHUB_ENV
-          echo "KERNEL_SOURCE=$(grep -w KERNEL_SOURCE config.env | head -n1 | cut -d '=' -f2-)" >> $GITHUB_ENV
-          echo "KERNEL_SOURCE_BRANCH=$(grep -w KERNEL_SOURCE_BRANCH config.env | head -n1 | cut -d '=' -f2-)" >> $GITHUB_ENV
-          echo "KERNEL_CONFIG=$(grep -w KERNEL_CONFIG config.env | head -n1 | cut -d '=' -f2-)" >> $GITHUB_ENV
-          echo "BUILD_ARGS=$(grep -w BUILD_ARGS config.env | head -n1 | cut -d ':' -f2-)" >> $GITHUB_ENV
-
+          echo "ANYKERNEL_SOURCE=$(cat config.env | grep -w "ANYKERNEL_SOURCE" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
+          echo "ANYKERNEL_SOURCE_BRANCH=$(cat config.env | grep -w "ANYKERNEL_SOURCE_BRANCH" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
+          echo "KERNEL_SOURCE=$(cat config.env | grep -w "KERNEL_SOURCE" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
+          echo "KERNEL_SOURCE_BRANCH=$(cat config.env | grep -w "KERNEL_SOURCE_BRANCH" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
+          echo "KERNEL_CONFIG=$(cat config.env | grep -w "KERNEL_CONFIG" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
+          echo "BUILD_ARGS=$(cat config.env | grep -w "BUILD_ARGS" | head -n 1 | cut -d ":" -f 2)" >> $GITHUB_ENV
           sudo apt-get update
-          sudo apt-get install -y python2 libncurses5 libselinux-dev
+          sudo apt install python2 libncurses5
+          sudo apt-get install libselinux-dev
           sudo update-alternatives --install /usr/bin/python python /usr/bin/python2 1
           sudo update-alternatives --set python /usr/bin/python2
-
       - name: Pull toolchain
         run: |
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 aarch64-linux-android-4.9
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 arm-linux-androideabi-4.9
           git clone https://github.com/xiangfeidexiaohuo/Snapdragon-LLVM.git clang
-
+          
       - name: Pull kernel source
         run: |
-          git clone --depth=1 "${{ env.KERNEL_SOURCE }}" -b "${{ env.KERNEL_SOURCE_BRANCH }}" kernel-source
-
+          git clone --depth=1 ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} kernel-source
+          # Generate base defconfig from source tree
       - name: SukiSU Integration
         run: |
           cd kernel-source
+          # Replace KernelSU-Next setup with SukiSU (nongki mode)
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
-
-      - name: Build kernel & prepare config
+          cd ..
+      - name: Build kernel
         run: |
           export KBUILD_BUILD_USER="hiahia"
-          export PATH="$GITHUB_WORKSPACE/clang/bin:${PATH}"
-          args="ARCH=arm64 \
-                O=../out \
-                ${{ env.BUILD_ARGS }} \
-                CLANG_TRIPLE=aarch64-linux-gnu- \
-                CROSS_COMPILE=$GITHUB_WORKSPACE/aarch64-linux-android-4.9/bin/aarch64-linux-android- \
-                CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/arm-linux-androideabi-4.9/bin/arm-linux-androideabi-"
-
+          export PATH=$GITHUB_WORKSPACE/clang/bin:${PATH}
+          args="                  ARCH=arm64 \
+                                  O=../out \
+                                  ${{ env.BUILD_ARGS }} \
+                                  CLANG_TRIPLE=aarch64-linux-gnu- \
+                                  CROSS_COMPILE=$GITHUB_WORKSPACE/aarch64-linux-android-4.9/bin/aarch64-linux-android- \
+                                  CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/arm-linux-androideabi-4.9/bin/arm-linux-androideabi- "
           cd kernel-source
-          make ARCH=arm64 "${KERNEL_CONFIG}"
-
-          # Inject features
-          ./scripts/config --file "arch/arm64/configs/${KERNEL_CONFIG}" \
+          # Generate base defconfig from source tree
+          make ARCH=arm64 ${KERNEL_CONFIG}
+          # Inject zstd-zram support
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
             --enable CONFIG_ZRAM \
             --enable CONFIG_ZRAM_WRITEBACK \
             --enable CONFIG_CRYPTO_ZSTD \
             --enable CONFIG_ZSTD_COMPRESS \
-            --enable CONFIG_ZSTD_DECOMPRESS \
-            --set-str CONFIG_ZRAM_DEFAULT_COMP "zstd" \
-            --enable CONFIG_ZRAM_DEF_COMP_ZSTD \
-            --enable CONFIG_ZRAM_MEMORY_TRACKING \
+            --enable CONFIG_ZSTD_DECOMPRESS
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --set-str CONFIG_ZRAM_DEFAULT_COMP "zstd" || true
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --enable CONFIG_ZRAM_DEF_COMP_ZSTD || true
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
+            --enable CONFIG_ZRAM_MEMORY_TRACKING
+          # Inject KPM support
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
             --enable CONFIG_KPM \
             --enable CONFIG_KALLSYMS \
-            --enable CONFIG_KALLSYMS_ALL \
+            --enable CONFIG_KALLSYMS_ALL
+          # Change default IO scheduler from CFQ to Kyber
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
             --disable CONFIG_DEFAULT_CFQ \
             --set-str CONFIG_DEFAULT_IOSCHED "kyber" \
-            --enable CONFIG_MQ_IOSCHED_KYBER \
+            --enable CONFIG_MQ_IOSCHED_KYBER
+          # Keep CFQ built-in for fallback but not default
+          ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
             --enable CONFIG_IOSCHED_CFQ \
             --enable CONFIG_CFQ_GROUP_IOSCHED
-
-          grep -E 'CONFIG_ZRAM|ZSTD|CONFIG_KPM|CONFIG_KALLSYMS' "arch/arm64/configs/${KERNEL_CONFIG}" || true
-
+          # Optional: confirm relevant settings
+          grep -E 'CONFIG_ZRAM|ZSTD|CONFIG_KPM|CONFIG_KALLSYMS' arch/arm64/configs/${KERNEL_CONFIG} || true
           clang -v
           make mrproper
-          make ${args} "${KERNEL_CONFIG}"
-          make -j"$(nproc --all)" ${args}
-
+          make ${args} ${{ env.KERNEL_CONFIG }}
+          make -j$(nproc --all) ${args}
       - name: Package kernel
         run: |
-          git clone --depth=1 "${{ env.ANYKERNEL_SOURCE }}" -b "${{ env.ANYKERNEL_SOURCE_BRANCH }}" AnyKernel3
-          rm -rf AnyKernel3/.git AnyKernel3/.github AnyKernel3/LICENSE AnyKernel3/README.md
-
-          for img in Image.gz-dtb Image-dtb Image.gz Image; do
-            if [[ -f out/arch/arm64/boot/$img ]]; then
-              cp "out/arch/arm64/boot/$img" "AnyKernel3/$img"
-              break
-            fi
-          done
-
-          if [[ -f out/arch/arm64/boot/dtbo.img ]]; then
+          git clone --depth=1 ${{ env.ANYKERNEL_SOURCE }} -b ${{ env.ANYKERNEL_SOURCE_BRANCH }} AnyKernel3 && rm -rf AnyKernel3/.git AnyKernel3/.github AnyKernel3/LICENSE AnyKernel3/README.md
+          if [[ -f out/arch/arm64/boot/Image.gz-dtb ]]; then
+            cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
+          elif [[ -f out/arch/arm64/boot/Image-dtb ]]; then
+            cp out/arch/arm64/boot/Image-dtb AnyKernel3/Image-dtb
+          elif [[ -f out/arch/arm64/boot/Image.gz ]]; then
+            cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
+          elif [[ -f out/arch/arm64/boot/Image ]]; then
+            cp out/arch/arm64/boot/Image AnyKernel3/Image
+          fi
+          if [ -f out/arch/arm64/boot/dtbo.img ]; then
             cp out/arch/arm64/boot/dtbo.img AnyKernel3/dtbo.img
           fi
-
-      - name: Upload artifacts
+      - name: Upload kernel to artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kernel
-          path: |
-            AnyKernel3/*
+          name: AnyKernel3_kernel
+          path: AnyKernel3/*
