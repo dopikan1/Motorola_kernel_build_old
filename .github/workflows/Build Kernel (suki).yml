@@ -54,6 +54,7 @@ jobs:
           ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
             --enable CONFIG_ZRAM \
             --enable CONFIG_BTRFS_FS \
+            --enable CONFIG_BTRFS_FS_POSIX_ACL \
             --enable CONFIG_ZRAM_WRITEBACK \
             --enable CONFIG_CRYPTO_ZSTD \
             --enable CONFIG_ZSTD_COMPRESS \
