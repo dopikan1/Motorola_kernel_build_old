@@ -73,7 +73,7 @@ jobs:
           ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
             --disable CONFIG_DEFAULT_CFQ \
             --set-str CONFIG_DEFAULT_IOSCHED "noop" \
-            --enable CONFIG_MQ_IOSCHED_KYBER
+            --enable CONFIG_MQ_IOSCHED_KYBER \
             --enable CONFIG_DEFAULT_NOOP
           # Keep CFQ built-in for fallback but not default
           ./scripts/config --file arch/arm64/configs/${KERNEL_CONFIG} \
